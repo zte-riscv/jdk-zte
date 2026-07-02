@@ -510,7 +510,7 @@ class PhaseCFG : public Phase {
   bool move_to_next(Block* bx, uint b_index);
   void move_to_end(Block* bx, uint b_index);
 
-  void insert_goto_at(uint block_no, uint succ_no);
+  Block* insert_goto_at(uint block_no, uint succ_no);
 
   // Check for NeverBranch at block end.  This needs to become a GOTO to the
   // true target.  NeverBranch are treated as a conditional branch that always
