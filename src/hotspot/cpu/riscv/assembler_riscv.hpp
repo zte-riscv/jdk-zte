@@ -2833,6 +2833,9 @@ enum Nf {
   INSN(minu,      0b0110011, 0b101, 0b0000101);
   INSN(clmul,     0b0110011, 0b001, 0b0000101);
   INSN(clmulh,    0b0110011, 0b011, 0b0000101);
+  INSN(bset,      0b0110011, 0b001, 0b0010100);
+  INSN(bclr,      0b0110011, 0b001, 0b0100100);
+  INSN(binv,      0b0110011, 0b001, 0b0110100);
 
 #undef INSN
 

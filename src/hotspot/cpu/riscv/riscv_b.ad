@@ -652,3 +652,45 @@ instruct convI2Bool_andI_reg_immIpowerOf2(iRegINoSp dst, iRegIorL2I src, immIpow
 
   ins_pipe(ialu_reg_reg);
 %}
+
+// OrL src, (1L << shift) -> bset dst, src, shift
+instruct orL_bset_reg_reg(iRegLNoSp dst, iRegL src, immL_1 one, iRegIorL2I shift) %{
+  predicate(UseZbs);
+  match(Set dst (OrL src (LShiftL one shift)));
+  ins_cost(ALU_COST);
+
+  format %{ "bset  $dst, $src, $shift\t#@orL_bset_reg_reg" %}
+  ins_encode %{
+    __ bset($dst$$Register, $src$$Register, $shift$$Register);
+  %}
+
+  ins_pipe(ialu_reg_reg);
+%}
+
+// AndL src, ~(1<<shift) -> bclr dst, src, shift
+instruct andL_bclr_reg_reg(iRegLNoSp dst, iRegL src, immL_1 one, iRegIorL2I shift, immL_M1 m1) %{
+  predicate(UseZbs);
+  match(Set dst (AndL src (XorL (LShiftL one shift) m1)));
+  ins_cost(ALU_COST);
+
+  format %{ "bclr  $dst, $src, $shift\t#@andL_bclr_reg_reg" %}
+  ins_encode %{
+    __ bclr($dst$$Register, $src$$Register, $shift$$Register);
+  %}
+
+  ins_pipe(ialu_reg_reg);
+%}
+
+// XorL src, (1<<shift) -> binv dst, src, shift
+instruct xorL_binv_reg_reg(iRegLNoSp dst, iRegL src, immL_1 one, iRegIorL2I shift) %{
+  predicate(UseZbs);
+  match(Set dst (XorL (LShiftL one shift) src));
+  ins_cost(ALU_COST);
+
+  format %{ "binv  $dst, $src, $shift\t#@xorL_binv_reg_reg" %}
+  ins_encode %{
+    __ binv($dst$$Register, $src$$Register, $shift$$Register);
+  %}
+
+  ins_pipe(ialu_reg_reg);
+%}

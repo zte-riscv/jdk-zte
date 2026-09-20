@@ -2893,6 +2893,18 @@ operand immL0()
   interface(CONST_INTER);
 %}
 
+// 64 bit unit increment
+operand immL_1()
+%{
+  predicate(n->get_long() == 1);
+  match(ConL);
+
+  op_cost(0);
+  format %{ %}
+  interface(CONST_INTER);
+%}
+
+
 // Pointer operands
 // Pointer Immediate
 operand immP()
