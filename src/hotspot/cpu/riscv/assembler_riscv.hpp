@@ -787,6 +787,16 @@ protected:
   INSN(remw,  0b0111011, 0b110, 0b0000001);
   INSN(remuw, 0b0111011, 0b111, 0b0000001);
 
+  // zf2 crc32
+  INSN(crc32_b, 0b0001011, 0b001, 0b0000000);  // crc32.b: 8-bit CRC32
+  INSN(crc32_h, 0b0001011, 0b001, 0b0001000);  // crc32.h: 16-bit CRC32
+  INSN(crc32_w, 0b0001011, 0b001, 0b0010000);  // crc32.w: 32-bit CRC32
+  INSN(crc32_d, 0b0001011, 0b001, 0b1011000);  // crc32.d: 64-bit CRC32
+  INSN(crc32c_b, 0b0001011, 0b001, 0b0100000); // crc32c.b: 8-bit CRC32C
+  INSN(crc32c_h, 0b0001011, 0b001, 0b0101000); // crc32c.h: 16-bit CRC32C
+  INSN(crc32c_w, 0b0001011, 0b001, 0b0110000); // crc32c.w: 32-bit CRC32C
+  INSN(crc32c_d, 0b0001011, 0b001, 0b1111000); // crc32c.d: 64-bit CRC32C
+
 #undef INSN
 
  private:

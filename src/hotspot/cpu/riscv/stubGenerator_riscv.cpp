@@ -7814,14 +7814,19 @@ static const int64_t right_3_bits = right_n_bits(3);
     BLOCK_COMMENT("Entry:");
     __ enter(); // required for proper stackwalking of RuntimeStub frame
 
-    const ExternalAddress table_addr = StubRoutines::crc_table_addr();
-    const ExternalAddress table_ext_addr = StubRoutines::riscv::crc_table_ext_addr();
-    __ la(c_rarg3, table_addr);
-    __ la(c_rarg7, table_ext_addr);
+    // Use hardware CRC32 instructions if available and enabled
+    if (UseCRC32) {
+      __ kernel_crc32_using_crc32(crc, buf, len, c_rarg7, t2, t3, t4);
+    } else {
+      const ExternalAddress table_addr = StubRoutines::crc_table_addr();
+      const ExternalAddress table_ext_addr = StubRoutines::riscv::crc_table_ext_addr();
+      __ la(c_rarg3, table_addr);
+      __ la(c_rarg7, table_ext_addr);
 
-    __ kernel_crc32(crc, buf, len,
-                    c_rarg3, c_rarg4, c_rarg5, c_rarg6, // tmp's for tables
-                    c_rarg7, t2, t3, t4, t5, t6);       // misc tmps
+      __ kernel_crc32(crc, buf, len,
+                      c_rarg3, c_rarg4, c_rarg5, c_rarg6, // tmp's for tables
+                      c_rarg7, t2, t3, t4, t5, t6);       // misc tmps
+    }
 
     __ leave(); // required for proper stackwalking of RuntimeStub frame
     __ ret();
@@ -7854,52 +7859,21 @@ static const int64_t right_3_bits = right_n_bits(3);
     BLOCK_COMMENT("Entry:");
     __ enter(); // required for proper stackwalking of RuntimeStub frame
 
-    // c_rarg3/c_rarg4 are reused as the two table base pointers; the rest are scratch.
-    __ kernel_crc32c(crc, buf, len,
-                     c_rarg3, c_rarg4,           // byte_table, clmul_table
-                     c_rarg5, c_rarg6, c_rarg7,  // accum_hi, k1, k2
-                     t2, t3, t4);                // scratch1, scratch2, fold_end
+    if (UseCRC32) {
+      __ kernel_crc32_using_crc32c(crc, buf, len, c_rarg7, t2, t3, t4);
+    } else {
+      // c_rarg3/c_rarg4 are reused as the two table base pointers; the rest are scratch.
+      __ kernel_crc32c(crc, buf, len,
+                       c_rarg3, c_rarg4,           // byte_table, clmul_table
+                       c_rarg5, c_rarg6, c_rarg7,  // accum_hi, k1, k2
+                       t2, t3, t4);                // scratch1, scratch2, fold_end
+    }
 
     __ leave(); // required for proper stackwalking of RuntimeStub frame
     __ ret();
 
     // record the stub entry and end
     store_archive_data(stub_id, start, __ pc());
-
-    return start;
-  }
-
-  address generate_updateBytesCRC32C() {
-    assert(UseCRC32CIntrinsics, "what are we doing here?");
-
-    __ align(CodeEntryAlignment);
-    StubId stub_id = StubId::stubgen_updateBytesCRC32C_id;
-    StubCodeMark mark(this, stub_id);
-
-    address start = __ pc();
-
-    const Register crc = c_rarg0;
-    const Register buf = c_rarg1;
-    const Register len = c_rarg2;
-
-    BLOCK_COMMENT("Entry:");
-    __ enter();
-
-    const ExternalAddress table_addr = StubRoutines::crc32c_table_addr();
-    const ExternalAddress table_ext_addr = StubRoutines::riscv::crc32c_table_ext_addr();
-    __ la(c_rarg3, table_addr);
-    __ la(c_rarg7, table_ext_addr);
-
-    // Initial CRC inversion
-    __ notr(crc, crc);  // crc = ~crc
-    __ kernel_crc32(crc, buf, len,
-                    c_rarg3, c_rarg4, c_rarg5, c_rarg6,  // table0-3
-                    c_rarg7, t2, t3, t4, t5, t6);        // tmp1-6
-    // Final CRC inversion
-    __ notr(crc, crc);  // crc = ~crc
-
-    __ leave();
-    __ ret();
 
     return start;
   }

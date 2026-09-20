@@ -301,6 +301,8 @@ class VM_Version : public Abstract_VM_Version {
   decl(Zvkn        ,  RV_NO_FLAG_BIT,  true ,  UPDATE_DEFAULT_DEP(UseZvkn, &ext_v, nullptr))              \
   /* Zvkg crypto extension for ghash and gcm */                                                           \
   decl(Zvkg        ,  RV_NO_FLAG_BIT,  true ,  UPDATE_DEFAULT_DEP(UseZvkg, &ext_v, nullptr))              \
+  /* Zf2 CRC32 extension for hardware CRC32 acceleration */                                               \
+  decl(CRC32       ,  RV_NO_FLAG_BIT,  true ,  UPDATE_DEFAULT(UseCRC32))                                  \
 
   #define DECLARE_RV_EXT_FEATURE(PRETTY, LINUX_BIT, FSTRING, FLAGF)                             \
   struct ext_##PRETTY##RVExtFeatureValue : public RVExtFeatureValue {                           \
@@ -537,6 +539,10 @@ private:
 
   static bool supports_float16_float_conversion() {
     return UseZfh || UseZfhmin;
+  }
+
+  static bool supports_crc32() {
+    return ext_CRC32.enabled();
   }
 
   // Check intrinsic support

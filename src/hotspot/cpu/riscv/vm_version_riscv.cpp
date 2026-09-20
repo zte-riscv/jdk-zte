@@ -138,6 +138,16 @@ void VM_Version::common_initialize() {
     FLAG_SET_DEFAULT(UseSignumIntrinsic, true);
   }
 
+  // // Check CRC32 hardware support
+  // if (FLAG_IS_DEFAULT(UseCRC32)) {
+  //   UseCRC32 = ext_CRC32.enabled();
+  // }
+
+  // if (UseCRC32 && !ext_CRC32.enabled()) {
+  //   warning("UseCRC32 specified, but CRC32 extension (Zf2) is not supported on this CPU");
+  //   FLAG_SET_DEFAULT(UseCRC32, false);
+  // }
+
   if (UseRVC && !ext_c.enabled()) {
     warning("RVC is not supported on this CPU");
     FLAG_SET_DEFAULT(UseRVC, false);

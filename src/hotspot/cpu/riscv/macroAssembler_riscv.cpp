@@ -3017,7 +3017,253 @@ void MacroAssembler::kernel_crc32c_clmul_fold(Register crc, Register buf, Regist
     addi(buf, buf, 1);
     update_byte_crc32(crc, tmp4, byte_table);
     j(L_tail_loop);
+  bind(L_exit);
+}
 
+/**
+ * CRC32 implementation using RISC-V CRC32 extension instructions.
+ * This function uses hardware CRC32 instructions (crc32.d, crc32.w, crc32.b)
+ * for optimal performance, similar to AArch64's crc32x, crc32w, crc32b.
+ *
+ * @param crc   register containing existing CRC (32-bit)
+ * @param buf   register pointing to input byte buffer (byte*)
+ * @param len   register containing number of bytes
+ * @param tmp0  scratch register
+ * @param tmp1  scratch register
+ * @param tmp2  scratch register
+ * @param tmp3  scratch register
+ */
+void MacroAssembler::kernel_crc32_using_crc32(Register crc, Register buf,
+        Register len, Register tmp0, Register tmp1, Register tmp2,
+        Register tmp3) {
+    Label CRC_by64_loop, CRC_by4_loop, CRC_by1_loop, CRC_less64, CRC_by64_pre, CRC_by32_loop, CRC_less32, L_exit;
+    assert_different_registers(crc, buf, len, tmp0, tmp1, tmp2, tmp3);
+
+    // Initialize CRC: crc = ~crc (for forward CRC32 format)
+    // RISC-V equivalent of mvnw: not + zero-extend to 32-bit
+    notr(crc, crc);
+    srliw(crc, crc, 0);  // Zero-extend to 32-bit (clear upper 32 bits)
+
+    // Check data length and select appropriate processing path
+    subi(len, len, 128);
+    bgez(len, CRC_by64_pre);
+
+  bind(CRC_less64);
+    addi(len, len, 128-32);
+    bgez(len, CRC_by32_loop);
+
+  bind(CRC_less32);
+    addi(len, len, 32-4);
+    bgez(len, CRC_by4_loop);
+    addi(len, len, 4);
+    bgtz(len, CRC_by1_loop);
+    j(L_exit);
+
+  // Process 32 bytes at a time using 64-bit CRC32 instructions
+  bind(CRC_by32_loop);
+    ld(tmp0, Address(buf, 0));
+    ld(tmp1, Address(buf, 8));
+    subi(len, len, 32);
+    crc32_d(crc, tmp0, crc);  // crc32_d(rd, rs1=data, rs2=crc)
+    ld(tmp2, Address(buf, 16));
+    crc32_d(crc, tmp1, crc);
+    ld(tmp3, Address(buf, 24));
+    addi(buf, buf, 32);
+    crc32_d(crc, tmp2, crc);
+    crc32_d(crc, tmp3, crc);
+    bgez(len, CRC_by32_loop);
+    addi(tmp0, len, 32);
+    bnez(tmp0, CRC_less32);
+    j(L_exit);
+
+  // Process 4 bytes at a time using 32-bit CRC32 instruction
+  bind(CRC_by4_loop);
+    lwu(tmp0, Address(buf, 0));
+    subi(len, len, 4);
+    addi(buf, buf, 4);
+    crc32_w(crc, tmp0, crc);  // crc32_w(rd, rs1=data, rs2=crc)
+    bgez(len, CRC_by4_loop);
+    addi(len, len, 4);
+    blez(len, L_exit);
+
+  // Process remaining bytes one at a time using 8-bit CRC32 instruction
+  bind(CRC_by1_loop);
+    lbu(tmp0, Address(buf, 0));
+    subi(len, len, 1);
+    addi(buf, buf, 1);
+    crc32_b(crc, tmp0, crc);  // crc32_b(rd, rs1=data, rs2=crc)
+    bgtz(len, CRC_by1_loop);
+    j(L_exit);
+
+  // Pre-load phase for 64-byte loop (software pipelining)
+  bind(CRC_by64_pre);
+    subi(buf, buf, 8);
+    ld(tmp0, Address(buf, 8));
+    crc32_d(crc, tmp0, crc);  // crc32_d(rd, rs1=data, rs2=crc)
+    ld(tmp1, Address(buf, 16));
+    crc32_d(crc, tmp1, crc);
+    ld(tmp2, Address(buf, 24));
+    crc32_d(crc, tmp2, crc);
+    ld(tmp3, Address(buf, 32));
+    crc32_d(crc, tmp3, crc);
+    ld(tmp0, Address(buf, 40));
+    crc32_d(crc, tmp0, crc);
+    ld(tmp1, Address(buf, 48));
+    crc32_d(crc, tmp1, crc);
+    ld(tmp2, Address(buf, 56));
+    ld(tmp3, Address(buf, 64));
+    addi(buf, buf, 64);
+
+    j(CRC_by64_loop);
+
+    align(CodeEntryAlignment);
+  bind(CRC_by64_loop);
+    subi(len, len, 64);
+    crc32_d(crc, tmp2, crc);
+    ld(tmp0, Address(buf, 8));
+    crc32_d(crc, tmp3, crc);
+    ld(tmp1, Address(buf, 16));
+    crc32_d(crc, tmp0, crc);
+    ld(tmp2, Address(buf, 24));
+    crc32_d(crc, tmp1, crc);
+    ld(tmp3, Address(buf, 32));
+    crc32_d(crc, tmp2, crc);
+    ld(tmp0, Address(buf, 40));
+    crc32_d(crc, tmp3, crc);
+    ld(tmp1, Address(buf, 48));
+    crc32_d(crc, tmp0, crc);
+    ld(tmp2, Address(buf, 56));
+    crc32_d(crc, tmp1, crc);
+    ld(tmp3, Address(buf, 64));
+    addi(buf, buf, 64);
+    bgez(len, CRC_by64_loop);
+
+    crc32_d(crc, tmp2, crc);
+    crc32_d(crc, tmp3, crc);
+
+    subi(len, len, 64);
+    addi(buf, buf, 8);
+    addi(tmp0, len, 128);
+    bnez(tmp0, CRC_less64);
+
+  bind(L_exit);
+    // Final inversion: crc = ~crc (complete forward CRC32 format)
+    notr(crc, crc);
+    srliw(crc, crc, 0);  // Zero-extend to 32-bit
+}
+
+/**
+ * CRC32C implementation using RISC-V CRC32C extension instructions.
+ * This function uses hardware CRC32C instructions (crc32c.d, crc32c.w, crc32c.b)
+ * for optimal performance, similar to AArch64's crc32cx, crc32cw, crc32cb.
+ */
+void MacroAssembler::kernel_crc32_using_crc32c(Register crc, Register buf,
+        Register len, Register tmp0, Register tmp1, Register tmp2,
+        Register tmp3) {
+    Label CRC_by64_loop, CRC_by4_loop, CRC_by1_loop, CRC_less64, CRC_by64_pre, CRC_by32_loop, CRC_less32, L_exit;
+    assert_different_registers(crc, buf, len, tmp0, tmp1, tmp2, tmp3);
+
+    // Check data length and select appropriate processing path
+    subi(len, len, 128);
+    bgez(len, CRC_by64_pre);
+
+  bind(CRC_less64);
+    addi(len, len, 128-32);
+    bgez(len, CRC_by32_loop);
+
+  bind(CRC_less32);
+    addi(len, len, 32-4);
+    bgez(len, CRC_by4_loop);
+    addi(len, len, 4);
+    bgtz(len, CRC_by1_loop);
+    j(L_exit);
+
+  // Process 32 bytes at a time using 64-bit CRC32C instructions
+  bind(CRC_by32_loop);
+    ld(tmp0, Address(buf, 0));
+    ld(tmp1, Address(buf, 8));
+    subi(len, len, 32);
+    crc32c_d(crc, tmp0, crc);  // crc32c_d(rd, rs1=data, rs2=crc)
+    ld(tmp2, Address(buf, 16));
+    crc32c_d(crc, tmp1, crc);
+    ld(tmp3, Address(buf, 24));
+    addi(buf, buf, 32);
+    crc32c_d(crc, tmp2, crc);
+    crc32c_d(crc, tmp3, crc);
+    bgez(len, CRC_by32_loop);
+    addi(tmp0, len, 32);
+    bnez(tmp0, CRC_less32);
+    j(L_exit);
+
+  // Process 4 bytes at a time using 32-bit CRC32C instruction
+  bind(CRC_by4_loop);
+    lwu(tmp0, Address(buf, 0));
+    subi(len, len, 4);
+    addi(buf, buf, 4);
+    crc32c_w(crc, tmp0, crc);  // crc32c_w(rd, rs1=data, rs2=crc)
+    bgez(len, CRC_by4_loop);
+    addi(len, len, 4);
+    blez(len, L_exit);
+
+  // Process remaining bytes one at a time using 8-bit CRC32C instruction
+  bind(CRC_by1_loop);
+    lbu(tmp0, Address(buf, 0));
+    subi(len, len, 1);
+    addi(buf, buf, 1);
+    crc32c_b(crc, tmp0, crc);  // crc32c_b(rd, rs1=data, rs2=crc)
+    bgtz(len, CRC_by1_loop);
+    j(L_exit);
+
+  // Pre-load phase for 64-byte loop (software pipelining)
+  bind(CRC_by64_pre);
+    subi(buf, buf, 8);
+    ld(tmp0, Address(buf, 8));
+    crc32c_d(crc, tmp0, crc);  // crc32c_d(rd, rs1=data, rs2=crc)
+    ld(tmp1, Address(buf, 16));
+    crc32c_d(crc, tmp1, crc);
+    ld(tmp2, Address(buf, 24));
+    crc32c_d(crc, tmp2, crc);
+    ld(tmp3, Address(buf, 32));
+    crc32c_d(crc, tmp3, crc);
+    ld(tmp0, Address(buf, 40));
+    crc32c_d(crc, tmp0, crc);
+    ld(tmp1, Address(buf, 48));
+    crc32c_d(crc, tmp1, crc);
+    ld(tmp2, Address(buf, 56));
+    ld(tmp3, Address(buf, 64));
+    addi(buf, buf, 64);
+
+    j(CRC_by64_loop);
+
+    align(CodeEntryAlignment);
+  bind(CRC_by64_loop);
+    subi(len, len, 64);
+    crc32c_d(crc, tmp2, crc);
+    ld(tmp0, Address(buf, 8));
+    crc32c_d(crc, tmp3, crc);
+    ld(tmp1, Address(buf, 16));
+    crc32c_d(crc, tmp0, crc);
+    ld(tmp2, Address(buf, 24));
+    crc32c_d(crc, tmp1, crc);
+    ld(tmp3, Address(buf, 32));
+    crc32c_d(crc, tmp2, crc);
+    ld(tmp0, Address(buf, 40));
+    crc32c_d(crc, tmp3, crc);
+    ld(tmp1, Address(buf, 48));
+    crc32c_d(crc, tmp0, crc);
+    ld(tmp2, Address(buf, 56));
+    crc32c_d(crc, tmp1, crc);
+    ld(tmp3, Address(buf, 64));
+    addi(buf, buf, 64);
+    bgez(len, CRC_by64_loop);
+
+    crc32c_d(crc, tmp2, crc);
+    crc32c_d(crc, tmp3, crc);
+
+    subi(len, len, 64);
+    addi(buf, buf, 8);
+    addi(tmp0, len, 128);
+    bnez(tmp0, CRC_less64);
   bind(L_exit);
 }
 

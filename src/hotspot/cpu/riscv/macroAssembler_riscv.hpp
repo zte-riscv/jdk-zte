@@ -1407,6 +1407,12 @@ public:
         Register table0, Register table1, Register table2, Register table3,
         bool upper);
   void update_byte_crc32(Register crc, Register val, Register table);
+  // CRC32 implementation using RISC-V CRC32 extension instructions (if available)
+  void kernel_crc32_using_crc32(Register crc, Register buf, Register len,
+        Register tmp0, Register tmp1, Register tmp2, Register tmp3);
+  // CRC32C implementation using RISC-V CRC32C extension instructions (if available)
+  void kernel_crc32_using_crc32c(Register crc, Register buf, Register len,
+        Register tmp0, Register tmp1, Register tmp2, Register tmp3);
 
   // CRC32C code for java.util.zip.CRC32C::updateBytes() intrinsic,
   // accelerated with Zbc carry-less multiplication (clmul/clmulh).
