@@ -2266,8 +2266,9 @@ void MacroAssembler::vector_update_crc32(Register crc, Register buf, Register le
       vsetivli(zr, N, Assembler::e32, Assembler::m1, Assembler::mu, Assembler::tu);
     }
 
-    vmv_v_i(vcrc, 0);
-    vmv_s_x(vcrc, crc);
+    vmv_v_x(vcrc, zr);
+    vmv_v_x(vtmp, zr);
+    vslide1up_vx(vcrc, vtmp, crc);
 
     // multiple of 64
     srli(blks, len, 6);
