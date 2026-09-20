@@ -866,7 +866,6 @@ void LIRGenerator::do_update_CRC32(Intrinsic* x) {
 void LIRGenerator::do_update_CRC32C(Intrinsic* x) {
   assert(UseCRC32CIntrinsics, "why are we here?");
   LIR_Opr result = rlock_result(x);
-
   switch (x->id()) {
     case vmIntrinsics::_updateBytesCRC32C:
     case vmIntrinsics::_updateDirectByteBufferCRC32C: {

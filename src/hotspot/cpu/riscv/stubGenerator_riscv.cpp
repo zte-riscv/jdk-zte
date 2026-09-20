@@ -7814,6 +7814,9 @@ static const int64_t right_3_bits = right_n_bits(3);
     BLOCK_COMMENT("Entry:");
     __ enter(); // required for proper stackwalking of RuntimeStub frame
 
+    const ExternalAddress table_addr = StubRoutines::crc_table_addr();
+    __ la(c_rarg3, table_addr);
+
     __ kernel_crc32(crc, buf, len,
                     c_rarg3, c_rarg4, c_rarg5, c_rarg6, // tmp's for tables
                     c_rarg7, t2, t3, t4, t5, t6);       // misc tmps
@@ -7860,6 +7863,39 @@ static const int64_t right_3_bits = right_n_bits(3);
 
     // record the stub entry and end
     store_archive_data(stub_id, start, __ pc());
+
+    return start;
+  }
+
+  address generate_updateBytesCRC32C() {
+    assert(UseCRC32CIntrinsics, "what are we doing here?");
+
+    __ align(CodeEntryAlignment);
+    StubId stub_id = StubId::stubgen_updateBytesCRC32C_id;
+    StubCodeMark mark(this, stub_id);
+
+    address start = __ pc();
+
+    const Register crc = c_rarg0;
+    const Register buf = c_rarg1;
+    const Register len = c_rarg2;
+
+    BLOCK_COMMENT("Entry:");
+    __ enter();
+
+    const ExternalAddress table_addr = StubRoutines::crc32c_table_addr();
+    __ la(c_rarg3, table_addr);
+
+    // Initial CRC inversion
+    __ notr(crc, crc);  // crc = ~crc
+    __ kernel_crc32(crc, buf, len,
+                    c_rarg3, c_rarg4, c_rarg5, c_rarg6,  // table0-3
+                    c_rarg7, t2, t3, t4, t5, t6);        // tmp1-6
+    // Final CRC inversion
+    __ notr(crc, crc);  // crc = ~crc
+
+    __ leave();
+    __ ret();
 
     return start;
   }
