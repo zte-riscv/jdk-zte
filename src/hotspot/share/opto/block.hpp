@@ -639,6 +639,10 @@ class PhaseCFG : public Phase {
   // Check all nodes and postalloc_expand them if necessary.
   void postalloc_expand(PhaseRegAlloc* _ra);
 
+#ifdef RISCV
+  void hoist_riscv_vset_before_fixup();
+#endif
+
 #ifndef PRODUCT
   bool trace_opto_pipelining() const { return _trace_opto_pipelining; }
 
