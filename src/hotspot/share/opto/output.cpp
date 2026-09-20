@@ -65,6 +65,43 @@
 #endif
 
 #ifdef RISCV
+#ifdef PRODUCT
+#define TraceRiscVVSetLICM false
+#endif
+
+static void trace_riscv_vset_state(const char* prefix, const RiscVVSetState& state) {
+  if (!TraceRiscVVSetLICM) {
+    return;
+  }
+  if (state._valid) {
+    tty->print("%s%s length=%u lmul=%d sew=%d vma=%d vta=%d",
+               prefix, type2name(state._bt), state._vector_length,
+               (int)state._vlmul, (int)state._sew, (int)state._vma, (int)state._vta);
+  } else {
+    tty->print("%sinvalid", prefix);
+  }
+}
+
+static void trace_riscv_vset_block_nodes(Block* block) {
+  if (!TraceRiscVVSetLICM) {
+    return;
+  }
+  tty->print_cr("RiscVVSetLICM: output dump B%d head#%u nodes=%u succs=%u",
+                block->_pre_order, block->head()->_idx,
+                block->number_of_nodes(), block->_num_succs);
+  for (uint j = 0; j < block->number_of_nodes(); j++) {
+    Node* n = block->get_node(j);
+    if (n->is_Mach()) {
+      MachNode* mach = n->as_Mach();
+      tty->print_cr("RiscVVSetLICM: output dump B%d[%u] mach(op=%d, ideal=%d)#%u",
+                    block->_pre_order, j, mach->Opcode(), mach->ideal_Opcode(), mach->_idx);
+    } else {
+      tty->print_cr("RiscVVSetLICM: output dump B%d[%u] node(op=%d)#%u",
+                    block->_pre_order, j, n->Opcode(), n->_idx);
+    }
+  }
+}
+
 static RiscVVSetState meet_vset_preds(Compile* C,
                                       Block* block,
                                       RiscVVSetState* out_states) {
@@ -73,24 +110,55 @@ static RiscVVSetState meet_vset_preds(Compile* C,
   for (uint p = 1; p < block->num_preds(); p++) {
     Block* pred_block = C->cfg()->get_block_for_node(block->pred(p));
     if (pred_block == nullptr) {
+      if (TraceRiscVVSetLICM) {
+        tty->print_cr("RiscVVSetLICM: output meet B%d: pred input %u has no block",
+                      block->_pre_order, p);
+      }
       return riscv_vset_invalid_state();
     }
     const RiscVVSetState& pred_state = out_states[pred_block->_pre_order];
+    if (TraceRiscVVSetLICM) {
+      tty->print("RiscVVSetLICM: output meet B%d <- B%d", block->_pre_order, pred_block->_pre_order);
+      trace_riscv_vset_state(" state=", pred_state);
+      tty->cr();
+    }
     if (!pred_state._valid) {
+      if (TraceRiscVVSetLICM) {
+        tty->print_cr("RiscVVSetLICM: output meet B%d: invalid because predecessor B%d is invalid",
+                      block->_pre_order, pred_block->_pre_order);
+        trace_riscv_vset_block_nodes(pred_block);
+      }
       return riscv_vset_invalid_state();
     }
     if (!has_state) {
       result = pred_state;
       has_state = true;
     } else if (!riscv_vset_state_equal_valid(result, pred_state)) {
+      if (TraceRiscVVSetLICM) {
+        tty->print("RiscVVSetLICM: output meet B%d: mismatch, expected", block->_pre_order);
+        trace_riscv_vset_state(" ", result);
+        tty->print(", got");
+        trace_riscv_vset_state(" ", pred_state);
+        tty->print_cr(" from B%d", pred_block->_pre_order);
+      }
       return riscv_vset_invalid_state();
     }
+  }
+  if (TraceRiscVVSetLICM) {
+    tty->print("RiscVVSetLICM: output meet B%d result", block->_pre_order);
+    trace_riscv_vset_state("=", has_state ? result : riscv_vset_invalid_state());
+    tty->cr();
   }
   return has_state ? result : riscv_vset_invalid_state();
 }
 
 static RiscVVSetState transfer_vset_state(Block* block,
                                           RiscVVSetState state) {
+  if (TraceRiscVVSetLICM) {
+    tty->print("RiscVVSetLICM: output transfer B%d in", block->_pre_order);
+    trace_riscv_vset_state("=", state);
+    tty->cr();
+  }
   for (uint j = 0; j < block->number_of_nodes(); j++) {
     Node* n = block->get_node(j);
     if (!n->is_Mach()) {
@@ -100,9 +168,24 @@ static RiscVVSetState transfer_vset_state(Block* block,
     if (mach->is_MachRiscVVSet()) {
       MachRiscVVSetNode* vset = mach->as_MachRiscVVSet();
       state = vset->state();
+      if (TraceRiscVVSetLICM) {
+        tty->print("RiscVVSetLICM: output transfer B%d[%u] vset#%u ->",
+                   block->_pre_order, j, vset->_idx);
+        trace_riscv_vset_state(" ", state);
+        tty->cr();
+      }
     } else if (riscv_mach_node_kills_vset(mach)) {
+      if (TraceRiscVVSetLICM) {
+        tty->print_cr("RiscVVSetLICM: output transfer B%d[%u] mach(op=%d, ideal=%d)#%u kills vset",
+                      block->_pre_order, j, mach->Opcode(), mach->ideal_Opcode(), mach->_idx);
+      }
       state = riscv_vset_invalid_state();
     }
+  }
+  if (TraceRiscVVSetLICM) {
+    tty->print("RiscVVSetLICM: output transfer B%d out", block->_pre_order);
+    trace_riscv_vset_state("=", state);
+    tty->cr();
   }
   return state;
 }
@@ -117,25 +200,63 @@ static void compute_vset_states(Compile* C,
   }
 
   bool changed = true;
+  uint iteration = 0;
   while (changed) {
+    if (TraceRiscVVSetLICM) {
+      tty->print_cr("RiscVVSetLICM: output dataflow iteration %u", iteration);
+    }
     changed = false;
     for (uint i = 0; i < nblocks; i++) {
       Block* block = C->cfg()->get_block(i);
       RiscVVSetState new_in = meet_vset_preds(C, block, out_states);
       RiscVVSetState new_out = transfer_vset_state(block, new_in);
       if (!riscv_vset_state_same(in_states[block->_pre_order], new_in)) {
+        if (TraceRiscVVSetLICM) {
+          tty->print("RiscVVSetLICM: output dataflow B%d in changes", block->_pre_order);
+          trace_riscv_vset_state(" old=", in_states[block->_pre_order]);
+          trace_riscv_vset_state(" new=", new_in);
+          tty->cr();
+        }
         in_states[block->_pre_order] = new_in;
         changed = true;
       }
       if (!riscv_vset_state_same(out_states[block->_pre_order], new_out)) {
+        if (TraceRiscVVSetLICM) {
+          tty->print("RiscVVSetLICM: output dataflow B%d out changes", block->_pre_order);
+          trace_riscv_vset_state(" old=", out_states[block->_pre_order]);
+          trace_riscv_vset_state(" new=", new_out);
+          tty->cr();
+        }
         out_states[block->_pre_order] = new_out;
         changed = true;
       }
     }
+    iteration++;
+  }
+}
+
+static void trace_riscv_vset_block_preds(Compile* C, Block* block, RiscVVSetState* out_states) {
+  if (!TraceRiscVVSetLICM) {
+    return;
+  }
+  for (uint p = 1; p < block->num_preds(); p++) {
+    Block* pred_block = C->cfg()->get_block_for_node(block->pred(p));
+    if (pred_block == nullptr) {
+      tty->print_cr("RiscVVSetLICM: output final pred state B%d <- input %u has no block",
+                    block->_pre_order, p);
+      continue;
+    }
+    tty->print("RiscVVSetLICM: output final pred state B%d <- B%d via #%u",
+               block->_pre_order, pred_block->_pre_order, block->pred(p)->_idx);
+    trace_riscv_vset_state(" out=", out_states[pred_block->_pre_order]);
+    tty->cr();
   }
 }
 
 static void insert_explicit_vset_nodes(Compile* C) {
+  if (TraceRiscVVSetLICM) {
+    tty->print_cr("RiscVVSetLICM: output insert explicit vset nodes");
+  }
   for (uint i = 0; i < C->cfg()->number_of_blocks(); i++) {
     Block* block = C->cfg()->get_block(i);
     for (uint j = 0; j < block->number_of_nodes(); j++) {
@@ -147,16 +268,42 @@ static void insert_explicit_vset_nodes(Compile* C) {
       if (!riscv_mach_node_vset_requirement(n->as_Mach(), &required)) {
         continue;
       }
+      if (j > 0) {
+        Node* prev = block->get_node(j - 1);
+        if (prev->is_Mach()) {
+          if (prev->as_Mach()->is_MachRiscVVSet()) {
+            MachRiscVVSetNode* prev_vset = prev->as_Mach()->as_MachRiscVVSet();
+            if (riscv_vset_state_equal_valid(prev_vset->state(), required)) {
+              if (TraceRiscVVSetLICM) {
+                tty->print_cr("RiscVVSetLICM: output skip insert before B%d[%u] mach(op=%d, ideal=%d)#%u: previous vset matches",
+                              block->_pre_order, j,
+                              n->as_Mach()->Opcode(), n->as_Mach()->ideal_Opcode(), n->_idx);
+              }
+              continue;
+            }
+          }
+        }
+      }
       MachRiscVVSetNode* vset = new MachRiscVVSetNode(required._bt, required._vector_length, required._vlmul,
                                                       required._vma, required._vta);
       block->insert_node(vset, j);
       C->cfg()->map_node_to_block(vset, block);
+      if (TraceRiscVVSetLICM) {
+        tty->print("RiscVVSetLICM: output insert vset#%u before B%d[%u] mach(op=%d, ideal=%d)#%u",
+                   vset->_idx, block->_pre_order, j + 1,
+                   n->as_Mach()->Opcode(), n->as_Mach()->ideal_Opcode(), n->_idx);
+        trace_riscv_vset_state(" state=", vset->state());
+        tty->cr();
+      }
       j++;
     }
   }
 }
 
 static void remove_redundant_vset_nodes_in_blocks(Compile* C) {
+  if (TraceRiscVVSetLICM) {
+    tty->print_cr("RiscVVSetLICM: output remove redundant vsets in blocks");
+  }
   for (uint i = 0; i < C->cfg()->number_of_blocks(); i++) {
     Block* block = C->cfg()->get_block(i);
     RiscVVSetState state = riscv_vset_invalid_state();
@@ -170,13 +317,28 @@ static void remove_redundant_vset_nodes_in_blocks(Compile* C) {
         MachRiscVVSetNode* vset = mach->as_MachRiscVVSet();
         RiscVVSetState vset_state = vset->state();
         if (riscv_vset_state_equal_valid(state, vset_state)) {
+          if (TraceRiscVVSetLICM) {
+            tty->print_cr("RiscVVSetLICM: output remove local redundant vset#%u at B%d[%u]",
+                          vset->_idx, block->_pre_order, j);
+          }
           block->remove_node(j);
           C->cfg()->unmap_node_from_block(vset);
           j--;
         } else {
+          if (TraceRiscVVSetLICM) {
+            tty->print("RiscVVSetLICM: output keep local vset#%u at B%d[%u]",
+                       vset->_idx, block->_pre_order, j);
+            trace_riscv_vset_state(" prior=", state);
+            trace_riscv_vset_state(" vset=", vset_state);
+            tty->cr();
+          }
           state = vset_state;
         }
       } else if (riscv_mach_node_kills_vset(mach)) {
+        if (TraceRiscVVSetLICM) {
+          tty->print_cr("RiscVVSetLICM: output local B%d[%u] mach(op=%d, ideal=%d)#%u kills vset",
+                        block->_pre_order, j, mach->Opcode(), mach->ideal_Opcode(), mach->_idx);
+        }
         state = riscv_vset_invalid_state();
       }
     }
@@ -191,9 +353,17 @@ static void remove_redundant_vset_nodes(Compile* C) {
       NEW_RESOURCE_ARRAY(RiscVVSetState, nblocks);
   compute_vset_states(C, in_states, out_states);
 
+  if (TraceRiscVVSetLICM) {
+    tty->print_cr("RiscVVSetLICM: output remove redundant vsets with block input states");
+  }
   for (uint i = 0; i < nblocks; i++) {
     Block* block = C->cfg()->get_block(i);
     RiscVVSetState state = in_states[block->_pre_order];
+    if (TraceRiscVVSetLICM) {
+      tty->print("RiscVVSetLICM: output scan B%d", block->_pre_order);
+      trace_riscv_vset_state(" in=", state);
+      tty->cr();
+    }
     for (uint j = 0; j < block->number_of_nodes(); j++) {
       Node* n = block->get_node(j);
       if (!n->is_Mach()) {
@@ -204,18 +374,43 @@ static void remove_redundant_vset_nodes(Compile* C) {
         MachRiscVVSetNode* vset = mach->as_MachRiscVVSet();
         RiscVVSetState vset_state = vset->state();
         if (riscv_vset_state_equal_valid(state, vset_state)) {
+          if (TraceRiscVVSetLICM) {
+            tty->print_cr("RiscVVSetLICM: output remove global redundant vset#%u at B%d[%u]",
+                          vset->_idx, block->_pre_order, j);
+          }
           block->remove_node(j);
           C->cfg()->unmap_node_from_block(vset);
           j--;
         } else {
+          if (TraceRiscVVSetLICM) {
+            tty->print("RiscVVSetLICM: output keep global vset#%u at B%d[%u]",
+                       vset->_idx, block->_pre_order, j);
+            trace_riscv_vset_state(" prior=", state);
+            trace_riscv_vset_state(" vset=", vset_state);
+            tty->cr();
+            trace_riscv_vset_block_preds(C, block, out_states);
+          }
           state = vset_state;
         }
       } else if (riscv_mach_node_kills_vset(mach)) {
+        if (TraceRiscVVSetLICM) {
+          tty->print_cr("RiscVVSetLICM: output global B%d[%u] mach(op=%d, ideal=%d)#%u kills vset",
+                        block->_pre_order, j, mach->Opcode(), mach->ideal_Opcode(), mach->_idx);
+        }
         state = riscv_vset_invalid_state();
       }
     }
   }
 }
+
+static void optimize_riscv_vset_nodes(Compile* C) {
+  insert_explicit_vset_nodes(C);
+  remove_redundant_vset_nodes_in_blocks(C);
+  remove_redundant_vset_nodes(C);
+}
+#ifdef PRODUCT
+#undef TraceRiscVVSetLICM
+#endif
 #endif
 
 //------------------------------Scheduling----------------------------------
@@ -488,9 +683,12 @@ void PhaseOutput::Output() {
   if (C->failing()) return;
 
 #ifdef RISCV
-  insert_explicit_vset_nodes(C);
-  remove_redundant_vset_nodes_in_blocks(C);
-  remove_redundant_vset_nodes(C);
+  // Make RVV vset instructions explicit before short branch sizing.  The
+  // original implicit vset emission was accounted for by scratch sizing the
+  // vector MachNode.  After removing that implicit emission, the standalone
+  // MachRiscVVSetNode instances must be present before shorten_branches()
+  // decides whether a conditional branch can use its short form.
+  optimize_riscv_vset_nodes(C);
   if (C->failing()) {
     return;
   }

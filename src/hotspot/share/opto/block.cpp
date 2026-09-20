@@ -538,6 +538,12 @@ Block* PhaseCFG::insert_goto_at(uint block_no, uint succ_no) {
     for (uint i = 1; i < out->num_preds(); i++) {
       Node* pred = out->pred(i);
       if (get_block_for_node(pred) == in) {
+#if defined(RISCV) && !defined(PRODUCT)
+        if (TraceRiscVVSetLICM) {
+          tty->print_cr("RiscVVSetLICM: split edge B%d succ %u: use predecessor control #%u instead of slot control #%u",
+                        in->_pre_order, succ_no, pred->_idx, edge_ctrl->_idx);
+        }
+#endif
         edge_ctrl = pred;
         found_edge_ctrl = true;
         break;
@@ -627,6 +633,10 @@ Block* PhaseCFG::insert_goto_at(uint block_no, uint succ_no) {
 }
 
 #ifdef RISCV
+#ifdef PRODUCT
+#define TraceRiscVVSetLICM false
+#endif
+
 static bool riscv_block_is_in_loop_nest(CFGLoop* loop, Block* block) {
   return loop != nullptr && block != nullptr && block->_loop != nullptr && loop->in_loop_nest(block);
 }
@@ -636,9 +646,27 @@ static bool riscv_is_loop_header(Block* block) {
          block->_loop != nullptr && block->_loop->head() == block;
 }
 
+static void trace_riscv_vset_licm_state(const char* prefix, const RiscVVSetState& state) {
+  if (!TraceRiscVVSetLICM) {
+    return;
+  }
+  if (state._valid) {
+    tty->print("%s%s length=%u lmul=%d sew=%d vma=%d vta=%d",
+               prefix, type2name(state._bt), state._vector_length,
+               (int)state._vlmul, (int)state._sew, (int)state._vma, (int)state._vta);
+  } else {
+    tty->print("%sinvalid", prefix);
+  }
+}
+
 static bool riscv_analyze_loop_vset_requirements(PhaseCFG* cfg, CFGLoop* loop, RiscVVSetState* state) {
   bool found = false;
   RiscVVSetState only = riscv_vset_invalid_state();
+  Block* head = loop->head();
+
+  if (TraceRiscVVSetLICM) {
+    tty->print_cr("RiscVVSetLICM: analyze loop head B%d", head->_pre_order);
+  }
 
   for (uint i = 0; i < cfg->number_of_blocks(); i++) {
     Block* block = cfg->get_block(i);
@@ -647,6 +675,11 @@ static bool riscv_analyze_loop_vset_requirements(PhaseCFG* cfg, CFGLoop* loop, R
     }
     // Keep the first version conservative: do not hoist across nested loops.
     if (block->_loop != loop) {
+      if (TraceRiscVVSetLICM) {
+        tty->print_cr("RiscVVSetLICM: reject loop head B%d: nested loop/member B%d has loop head B%d",
+                      head->_pre_order, block->_pre_order,
+                      block->_loop != nullptr && block->_loop->head() != nullptr ? block->_loop->head()->_pre_order : 0);
+      }
       return false;
     }
     for (uint j = 0; j < block->number_of_nodes(); j++) {
@@ -657,22 +690,53 @@ static bool riscv_analyze_loop_vset_requirements(PhaseCFG* cfg, CFGLoop* loop, R
       MachNode* mach = n->as_Mach();
       RiscVVSetState required = riscv_vset_invalid_state();
       if (riscv_mach_node_vset_requirement(mach, &required)) {
+        if (TraceRiscVVSetLICM) {
+          tty->print("RiscVVSetLICM: loop head B%d: node B%d[%u] mach(op=%d, ideal=%d)#%u requires ",
+                     head->_pre_order, block->_pre_order, j,
+                     mach->Opcode(), mach->ideal_Opcode(), mach->_idx);
+          trace_riscv_vset_licm_state("", required);
+          tty->cr();
+        }
         if (!found) {
           only = required;
           found = true;
         } else if (!riscv_vset_state_equal_valid(only, required)) {
+          if (TraceRiscVVSetLICM) {
+            tty->print("RiscVVSetLICM: reject loop head B%d: requirement mismatch, expected ",
+                       head->_pre_order);
+            trace_riscv_vset_licm_state("", only);
+            tty->print(", got ");
+            trace_riscv_vset_licm_state("", required);
+            tty->print_cr(" at B%d[%u] mach(op=%d, ideal=%d)#%u",
+                          block->_pre_order, j,
+                          mach->Opcode(), mach->ideal_Opcode(), mach->_idx);
+          }
           return false;
         }
       } else if (riscv_mach_node_kills_vset(mach)) {
+        if (TraceRiscVVSetLICM) {
+          tty->print_cr("RiscVVSetLICM: reject loop head B%d: kill node B%d[%u] mach(op=%d, ideal=%d)#%u",
+                        head->_pre_order, block->_pre_order, j,
+                        mach->Opcode(), mach->ideal_Opcode(), mach->_idx);
+        }
         return false;
       }
     }
   }
 
   if (!found) {
+    if (TraceRiscVVSetLICM) {
+      tty->print_cr("RiscVVSetLICM: reject loop head B%d: no vector vset requirement found",
+                    head->_pre_order);
+    }
     return false;
   }
   *state = only;
+  if (TraceRiscVVSetLICM) {
+    tty->print("RiscVVSetLICM: accept loop head B%d with state ", head->_pre_order);
+    trace_riscv_vset_licm_state("", only);
+    tty->cr();
+  }
   return true;
 }
 
@@ -696,9 +760,17 @@ static bool riscv_find_loop_entry_edges(PhaseCFG* cfg, CFGLoop* loop,
   for (uint p = 1; p < head->num_preds(); p++) {
     Block* pred_block = cfg->get_block_for_node(head->pred(p));
     if (pred_block == nullptr) {
+      if (TraceRiscVVSetLICM) {
+        tty->print_cr("RiscVVSetLICM: reject loop head B%d: predecessor input %u has no block",
+                      head->_pre_order, p);
+      }
       return false;
     }
     if (riscv_block_is_in_loop_nest(loop, pred_block)) {
+      if (TraceRiscVVSetLICM) {
+        tty->print_cr("RiscVVSetLICM: loop head B%d: backedge predecessor B%d input %u",
+                      head->_pre_order, pred_block->_pre_order, p);
+      }
       backedge_count++;
     } else {
       uint succ_no = 0;
@@ -711,27 +783,57 @@ static bool riscv_find_loop_entry_edges(PhaseCFG* cfg, CFGLoop* loop,
         }
       }
       if (!found_succ) {
+        if (TraceRiscVVSetLICM) {
+          tty->print_cr("RiscVVSetLICM: reject loop head B%d: entry predecessor B%d has no successor to head",
+                        head->_pre_order, pred_block->_pre_order);
+        }
         return false;
       }
 
       Node* entry_ctrl = head->pred(p);
       if (!pred_block->contains(entry_ctrl)) {
+        if (TraceRiscVVSetLICM) {
+          tty->print_cr("RiscVVSetLICM: reject loop head B%d: entry control #%u is not in predecessor B%d",
+                        head->_pre_order, entry_ctrl->_idx, pred_block->_pre_order);
+        }
         return false;
       }
       Node* entry_succ = pred_block->get_node(pred_block->number_of_nodes() -
                                               pred_block->_num_succs + succ_no);
       if (!entry_succ->is_Proj() && entry_succ != pred_block->end() &&
           !entry_ctrl->is_Proj() && entry_ctrl != pred_block->end()) {
+        if (TraceRiscVVSetLICM) {
+          tty->print_cr("RiscVVSetLICM: reject loop head B%d: unsupported entry edge B%d succ %u slot #%u ctrl #%u",
+                        head->_pre_order, pred_block->_pre_order, succ_no,
+                        entry_succ->_idx, entry_ctrl->_idx);
+        }
         return false;
       }
 
+      if (TraceRiscVVSetLICM) {
+        tty->print_cr("RiscVVSetLICM: loop head B%d: entry edge B%d succ %u slot #%u ctrl #%u",
+                      head->_pre_order, pred_block->_pre_order, succ_no,
+                      entry_succ->_idx, entry_ctrl->_idx);
+      }
       entries->append(pred_block);
       succs->append(succ_no);
       entry_count++;
     }
   }
 
-  return entry_count != 0 && backedge_count != 0;
+  if (entry_count == 0 || backedge_count == 0) {
+    if (TraceRiscVVSetLICM) {
+      tty->print_cr("RiscVVSetLICM: reject loop head B%d: entries=%u backedges=%u",
+                    head->_pre_order, entry_count, backedge_count);
+    }
+    return false;
+  }
+
+  if (TraceRiscVVSetLICM) {
+    tty->print_cr("RiscVVSetLICM: loop head B%d: found %u entry edge(s), %u backedge(s)",
+                  head->_pre_order, entry_count, backedge_count);
+  }
+  return true;
 }
 
 static MachRiscVVSetNode* riscv_insert_vset_in_edge_block(PhaseCFG* cfg, Block* block, const RiscVVSetState& state) {
@@ -772,10 +874,22 @@ void PhaseCFG::hoist_riscv_vset_before_fixup() {
       uint succ_no = succs.at(e);
       uint pred_block_no = 0;
       if (!riscv_find_block_no(this, entry, &pred_block_no)) {
+        if (TraceRiscVVSetLICM) {
+          tty->print_cr("RiscVVSetLICM: skip loop head B%d: entry block disappeared",
+                        head->_pre_order);
+        }
         continue;
       }
       Block* edge_block = insert_goto_at(pred_block_no, succ_no);
-      riscv_insert_vset_in_edge_block(this, edge_block, state);
+      MachRiscVVSetNode* vset = riscv_insert_vset_in_edge_block(this, edge_block, state);
+      if (TraceRiscVVSetLICM) {
+        Node* edge_end = edge_block->get_node(edge_block->end_idx());
+        tty->print("RiscVVSetLICM: hoist loop head B%d: inserted vset#%u on edge B%d succ %u into block B%d head#%u end#%u",
+                   head->_pre_order, vset->_idx, entry->_pre_order, succ_no,
+                   edge_block->_pre_order, edge_block->head()->_idx, edge_end->_idx);
+        trace_riscv_vset_licm_state(" state=", state);
+        tty->cr();
+      }
 
       // Skip the newly inserted block in this scan.
       if (pred_block_no <= i) {
@@ -784,6 +898,9 @@ void PhaseCFG::hoist_riscv_vset_before_fixup() {
     }
   }
 }
+#ifdef PRODUCT
+#undef TraceRiscVVSetLICM
+#endif
 #endif
 
 // Does this block end in a multiway branch that cannot have the default case

@@ -4302,6 +4302,7 @@ instruct vstring_compress(iRegP_R12 src, iRegP_R11 dst, iRegI_R13 len, iRegI_R10
   match(Set result (StrCompressedCopy src (Binary dst len)));
   effect(TEMP_DEF result, USE_KILL src, USE_KILL dst, USE_KILL len,
          TEMP v0, TEMP v1, TEMP v2, TEMP v3, TEMP tmp);
+  ins_riscv_vset(false);
 
   format %{ "String Compress $src,$dst -> $result    // KILL R11, R12, R13" %}
   ins_encode %{
@@ -4698,6 +4699,7 @@ instruct vmask_xor(vRegMask dst, vRegMask src1, vRegMask src2) %{
 instruct vmaskcast(vRegMask dst_src) %{
   match(Set dst_src (VectorMaskCast dst_src));
   ins_cost(0);
+  ins_riscv_vset(false);
   format %{ "vmaskcast $dst_src, $dst_src\t# do nothing" %}
   ins_encode(/* empty encoding */);
   ins_pipe(pipe_class_empty);
@@ -5104,6 +5106,7 @@ instruct vmask_reinterpret_same_esize(vRegMask dst_src) %{
             Matcher::vector_length_in_bytes(n) == Matcher::vector_length_in_bytes(n->in(1)));
   match(Set dst_src (VectorReinterpret dst_src));
   ins_cost(0);
+  ins_riscv_vset(false);
   format %{ "vmask_reinterpret_same_esize $dst_src, $dst_src\t# do nothing" %}
   ins_encode(/* empty encoding */);
   ins_pipe(pipe_class_empty);

@@ -104,6 +104,8 @@ define_pd_global(bool, ValueTypeReturnedAsFields, false);
   product(bool, UseRVV, false, DIAGNOSTIC, "Use RVV instructions")               \
   product(bool, UseRiscVVSetLICM, false, DIAGNOSTIC,                             \
           "Hoist loop-invariant RVV vset instructions")                          \
+  develop(bool, TraceRiscVVSetLICM, false,                                        \
+          "Trace loop-invariant RVV vset hoisting decisions")                     \
   product(bool, UseZba, false, DIAGNOSTIC, "Use Zba instructions")               \
   product(bool, UseZbb, false, DIAGNOSTIC, "Use Zbb instructions")               \
   product(bool, UseZbc, false, DIAGNOSTIC, "Use Zbc instructions")               \

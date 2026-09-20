@@ -38,9 +38,6 @@ static bool set_riscv_vset_requirement(const TypeVect* vt, RiscVVSetRequirement*
     return false;
   }
   BasicType bt = vt->element_basic_type();
-  if (bt == T_BOOLEAN) {
-    return false;
-  }
   req->_bt = bt;
   req->_vector_length = vt->length();
   req->_vlmul = vlmul;
